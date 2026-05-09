@@ -1,0 +1,63 @@
+{
+  "name": "pet",
+  "private": true,
+  "version": "0.0.3",
+  "description": "A Ram desktop pet app built with Vue and Electron.",
+  "author": "Siyue",
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "electron": "wait-on http://127.0.0.1:5173 && electron electron/main.cjs",
+    "desktop": "concurrently -k \"npm run dev -- --host 127.0.0.1\" \"npm run electron\"",
+    "build": "vue-tsc -b && vite build",
+    "desktop:prod": "npm run build && cross-env PET_LOAD_DIST=1 electron electron/main.cjs",
+    "preview": "vite preview",
+    "dist:mac": "npm run build && electron-builder --mac dmg",
+    "dist:win": "npm run build && electron-builder --win portable --x64",
+    "release:patch": "node scripts/release.mjs patch",
+    "release:minor": "node scripts/release.mjs minor",
+    "release:major": "node scripts/release.mjs major"
+  },
+  "dependencies": {
+    "vue": "^3.5.32"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.2",
+    "@vitejs/plugin-vue": "^6.0.6",
+    "@vue/tsconfig": "^0.9.1",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^42.0.0",
+    "electron-builder": "^26.8.1",
+    "sharp": "^0.34.5",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.10",
+    "vue-tsc": "^3.2.7",
+    "wait-on": "^9.0.5"
+  },
+  "build": {
+    "appId": "com.siyue.ram-pet",
+    "productName": "RamPet",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "artifactName": "${productName}-${version}-win-${arch}.${ext}"
+    }
+  }
+}
