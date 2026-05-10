@@ -54,7 +54,7 @@ GitHub Actions 会自动生成：
 - Mac `.dmg`
 - Windows `.exe`
 
-然后上传到 GitHub Releases。
+然后上传到 GitHub Releases。Release 正文会读取 `docs/CHANGELOG.md` 中对应版本的内容，所以发版前要把更新内容写清楚。
 
 ## 去哪里看结果
 
