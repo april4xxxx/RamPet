@@ -15,6 +15,14 @@ Format: [Semantic Versioning](https://semver.org) · Dates in YYYY-MM-DD
 
 ---
 
+## [0.0.5] — 2026-05-10
+
+### Fixed
+
+- 修复 GitHub tag 构建时 electron-builder 自动发布导致缺少 `GH_TOKEN` 后失败的问题。
+
+---
+
 ## [0.0.4] — 2026-05-10
 
 ### Changed
