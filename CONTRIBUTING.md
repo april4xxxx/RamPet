@@ -4,10 +4,10 @@
 
 ## 日常流程
 
-需要执行的想法放到 GitHub Issues。
-正在做的任务放到 GitHub Projects 看板。
-代码改动用 Pull Request，不直接改 `main`。
-重要结论更新到 `docs/` 或对应 issue。
+1. 需要执行的想法放到 GitHub Issues。
+2. 正在做的任务放到 GitHub Projects 看板。
+3. 代码改动用 Pull Request，不直接改 `main`。
+4. 重要结论更新到 `docs/` 或对应 issue。
 
 ## 本地运行
 
