@@ -7,8 +7,21 @@ Format: [Semantic Versioning](https://semver.org) · Dates in YYYY-MM-DD
 
 ## [Unreleased]
 
+### Added
+
 ### Changed
 
+### Fixed
+
+---
+
+## [0.0.4] — 2026-05-10
+
+### Changed
+
+- 将内部协作文档移出公开仓库跟踪，并在协作说明中补充 Siyue、Codex 和 Claude Code 的署名方式。
+- 更新公开发布指南，统一使用项目 release 脚本同步版本号和 changelog。
+- 整理 `more_status.png` 素材位置，并移除不再公开跟踪的参考素材。
 - 调整项目约定：日常每次修改都记录到 `Unreleased`，但只有发版打包时才升级版本号。
 
 ---

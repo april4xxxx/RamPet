@@ -19,6 +19,12 @@ codex-related-export/
 *.mov
 *.mp4
 
+# Private project notes
+CLAUDE.md
+docs/PARTNER_PITCH.md
+docs/PROJECT_NARRATIVE.md
+docs/CODEX_GITHUB_GUIDE.md
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -23,7 +23,7 @@ Windows：
 npm run dist:win
 ```
 
-GitHub Release 会在推送 `v*` 版本标签时自动生成，Codex + GitHub 的完整使用步骤见 `docs/CODEX_GITHUB_GUIDE.md`。
+GitHub Release 会在推送 `v*` 版本标签时自动生成，完整发布步骤见 `docs/GITHUB_RELEASE_GUIDE.md`。
 
 ## 目录说明
 

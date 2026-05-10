@@ -1,7 +1,7 @@
 {
   "name": "pet",
   "private": true,
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "A Ram desktop pet app built with Vue and Electron.",
   "author": "Siyue",
   "main": "electron/main.cjs",

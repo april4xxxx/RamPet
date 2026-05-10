@@ -34,16 +34,20 @@ git push
 当你想发布一个测试版本时，运行：
 
 ```bash
-npm version patch
-git push
-git push origin --tags
+npm run release:patch -- "这次版本的简短说明"
+git add package.json package-lock.json docs/CHANGELOG.md
+git commit -m "Release v版本号"
+git tag v版本号
+git push origin main
+git push origin v版本号
 ```
 
 这会做三件事：
 
 - 把 `package.json` 里的版本号加一位，比如 `0.0.3` 变成 `0.0.4`
-- 创建一个 Git 标签，比如 `v0.0.4`
-- 推送到 GitHub 后触发自动打包
+- 把 `docs/CHANGELOG.md` 里的 `Unreleased` 内容归档到新版本
+- 本地生成 Mac 包，确认当前版本可以打包
+- 推送版本标签后触发 GitHub 自动打包
 
 GitHub Actions 会自动生成：
 
