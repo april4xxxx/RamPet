@@ -1,14 +1,13 @@
 # 协作方式
 
-这个项目是非盈利、为爱发电的拉姆桌面宠物。协作可以轻量，但代码、任务和结论尽量留在 GitHub，方便大家回看。
+这个项目是非盈利、为爱发电的拉姆桌面宠物。
 
 ## 日常流程
 
-1. 群里可以随便脑暴。
-2. 需要执行的想法放到 GitHub Issues。
-3. 正在做的任务放到 GitHub Projects 看板。
-4. 代码改动用 Pull Request，不直接改 `main`。
-5. 重要结论更新到 `docs/` 或对应 issue。
+需要执行的想法放到 GitHub Issues。
+正在做的任务放到 GitHub Projects 看板。
+代码改动用 Pull Request，不直接改 `main`。
+重要结论更新到 `docs/` 或对应 issue。
 
 ## 本地运行
 
