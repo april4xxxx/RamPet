@@ -17,13 +17,20 @@ import {
   WALK_STEP_PX,
   type PetMood,
 } from '../lib/pet-state'
+import {
+  CODEX_STATUS_LABELS,
+  isPersistentCodexStatus,
+  type CodexPetStatus,
+  type CodexStatusAction,
+  type PetAction,
+} from '../lib/codex-status'
 
 const props = defineProps<{
   desktop?: boolean
 }>()
 
 const mood = ref<PetMood>('idle')
-const position = ref(props.desktop ? { x: 28, y: 28 } : { x: 80, y: 260 })
+const position = ref(props.desktop ? { x: 68, y: 92 } : { x: 80, y: 260 })
 const dragOffset = ref({ x: 0, y: 0 })
 const lastPointer = ref({ x: 0, y: 0 })
 const pointerDown = ref<{ x: number; y: number } | null>(null)
@@ -38,6 +45,9 @@ const clickMoodPool = ref<PetMood[]>([])
 const lastClickMood = ref<PetMood | null>(null)
 const isStudyAltFrame = ref(false)
 const speechText = ref('')
+const codexStatus = ref<CodexPetStatus>('idle')
+const codexMessage = ref('Codex 已就绪')
+const codexDetail = ref('')
 
 let sleepTimer = 0
 let walkTimer = 0
@@ -50,14 +60,13 @@ let speechTimer = 0
 let speechHideTimer = 0
 let unsubscribePetAction: (() => void) | undefined
 
-const SPEECH_MESSAGES = [
+const SPEECH_ALLOWED_MOODS = ['affection', 'happy', 'play', 'excited'] as const satisfies readonly PetMood[]
+const CARE_MESSAGES = [
   '坐太久啦，起来走走吧。',
   '活动一下肩颈吧。',
   '喝口水，休息一下眼睛。',
   '站起来陪我动一动？',
 ] as const
-
-const SPEECH_ALLOWED_MOODS = ['affection', 'happy', 'play', 'excited'] as const satisfies readonly PetMood[]
 
 const assetPath = computed(() => {
   if (!hasAsset.value) return ''
@@ -67,6 +76,18 @@ const assetPath = computed(() => {
   return PET_ASSET_PATHS[mood.value] || FALLBACK_ASSET_PATH
 })
 
+const codexStatusLabel = computed(() => CODEX_STATUS_LABELS[codexStatus.value])
+
+const codexPreviewVisible = computed(() => props.desktop && codexStatus.value !== 'idle')
+
+const codexPreviewLines = computed(() =>
+  codexDetail.value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 3),
+)
+
 const petStyle = computed(() => ({
   transform: `translate3d(${position.value.x}px, ${position.value.y}px, 0)`,
   '--pet-direction': mood.value === 'sleep' || mood.value === 'work' ? 1 : direction.value,
@@ -74,6 +95,10 @@ const petStyle = computed(() => ({
 
 function isTransientActive() {
   return Date.now() < transientUntil.value
+}
+
+function isCodexDrivingMood() {
+  return isPersistentCodexStatus(codexStatus.value)
 }
 
 function markInteraction() {
@@ -141,12 +166,13 @@ function onPetHover() {
 }
 
 function showSpeechBubble() {
+  if (isCodexDrivingMood()) return
   if (isDragging.value || mood.value === 'sleep' || mood.value === 'walk') return
   if (!SPEECH_ALLOWED_MOODS.includes(mood.value as (typeof SPEECH_ALLOWED_MOODS)[number])) {
     const speechMood = SPEECH_ALLOWED_MOODS[Math.floor(Math.random() * SPEECH_ALLOWED_MOODS.length)]
     setMood(speechMood, 7000)
   }
-  const nextMessage = SPEECH_MESSAGES[Math.floor(Math.random() * SPEECH_MESSAGES.length)]
+  const nextMessage = CARE_MESSAGES[Math.floor(Math.random() * CARE_MESSAGES.length)]
   speechText.value = nextMessage
   if (speechHideTimer) window.clearTimeout(speechHideTimer)
   speechHideTimer = window.setTimeout(() => {
@@ -287,6 +313,7 @@ function startDesktopWalk(dir: 1 | -1) {
 }
 
 function moveRandomly() {
+  if (isCodexDrivingMood()) return
   if (isDragging.value || isTransientActive() || mood.value === 'sleep') return
 
   // 70% 维持上次方向，30% 反向，避免左右横跳
@@ -324,6 +351,7 @@ function triggerWalkAction() {
 }
 
 function chooseAmbientMood() {
+  if (isCodexDrivingMood()) return
   if (isDragging.value || isTransientActive() || mood.value === 'sleep') return
   const nextMood = AMBIENT_MOODS[Math.floor(Math.random() * AMBIENT_MOODS.length)]
   if (nextMood === 'idle') mood.value = 'idle'
@@ -331,6 +359,7 @@ function chooseAmbientMood() {
 }
 
 function checkSleep() {
+  if (isCodexDrivingMood()) return
   if (isDragging.value || isTransientActive()) return
   if (Date.now() - lastInteraction.value > SLEEP_AFTER_MS) {
     mood.value = 'sleep'
@@ -349,7 +378,31 @@ function onAssetError() {
   hasAsset.value = false
 }
 
-function handlePetAction(action: { type: 'mood'; mood: string }) {
+function handleCodexStatus(action: CodexStatusAction) {
+  codexStatus.value = action.status
+  codexMessage.value = action.message || `Codex ${CODEX_STATUS_LABELS[action.status]}`
+  codexDetail.value = action.preview?.length ? action.preview.join('\n') : action.detail || ''
+  markInteraction()
+
+  if (action.status === 'idle') {
+    transientUntil.value = 0
+    mood.value = 'idle'
+    speechText.value = ''
+    codexDetail.value = ''
+    return
+  }
+
+  clearWalkTimers()
+  stopWalkFrameTimer()
+  setMood(action.mood, isPersistentCodexStatus(action.status) ? 60 * 60 * 1000 : 6000)
+  speechText.value = ''
+}
+
+function handlePetAction(action: PetAction) {
+  if (action.type === 'codex-status') {
+    handleCodexStatus(action)
+    return
+  }
   if (action.type !== 'mood') return
   if (action.mood === 'walk') {
     triggerWalkAction()
@@ -413,11 +466,27 @@ onUnmounted(() => {
     @pointerup="stopDrag"
     @pointercancel="stopDrag"
   >
-    <div v-if="speechText" class="speech-bubble" role="status" aria-live="polite">
+    <div
+      v-if="codexPreviewVisible"
+      class="codex-preview-bubble"
+      :class="[`is-codex-${codexStatus}`, { 'has-preview-lines': codexPreviewLines.length }]"
+      role="status"
+      aria-live="polite"
+    >
+      <div class="codex-preview-heading">
+        <span class="codex-preview-kicker">{{ codexStatusLabel }}</span>
+        <span class="codex-preview-pulse" aria-hidden="true"></span>
+      </div>
+      <div class="codex-preview-message">{{ codexMessage }}</div>
+      <ul v-if="codexPreviewLines.length" class="codex-preview-lines">
+        <li v-for="line in codexPreviewLines" :key="line">{{ line }}</li>
+      </ul>
+    </div>
+    <div v-else-if="speechText" class="speech-bubble" role="status" aria-live="polite">
       {{ speechText }}
     </div>
     <img v-if="hasAsset" class="ram-image" :src="assetPath" alt="" draggable="false" @error="onAssetError" />
-    <div v-else class="asset-placeholder">
+    <div v-if="!hasAsset" class="asset-placeholder">
       <strong>等待拉姆素材</strong>
       <span>放入 src/assets/ram/idle.png</span>
     </div>

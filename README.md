@@ -9,6 +9,14 @@ npm install
 npm run desktop
 ```
 
+## Codex desktop pet mode
+
+```powershell
+npm.cmd run codex:pet
+```
+
+Codex mode watches `.codex-pet/status.json` and changes the pet mood from Codex status updates. See `docs/CODEX_PET.md` for the status commands.
+
 ## 打包
 
 Mac：

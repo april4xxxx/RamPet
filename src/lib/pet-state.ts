@@ -6,15 +6,18 @@ import excitedAsset from '../assets/ram/excited.png'
 import happyAsset from '../assets/ram/happy.png'
 import hungryAsset from '../assets/ram/hungry.png'
 import idleAsset from '../assets/ram/idle.png'
+import jumpingAsset from '../assets/ram/jumping.png'
 import medicineAsset from '../assets/ram/medicine.png'
 import playAsset from '../assets/ram/play.png'
 import sadAsset from '../assets/ram/sad.png'
 import sickAsset from '../assets/ram/sick.png'
 import sleepAsset from '../assets/ram/sleep.png'
+import spottedAsset from '../assets/ram/spotted.png'
 import studyAsset from '../assets/ram/study.png'
 import studyAltAsset from '../assets/ram/study-1.png'
 import walk1Asset from '../assets/ram/walk-1.png'
 import walk2Asset from '../assets/ram/walk-2.png'
+import wavingAsset from '../assets/ram/waving.png'
 import workAsset from '../assets/ram/work.png'
 import workAltAsset from '../assets/ram/work-1.png'
 
@@ -33,6 +36,10 @@ export type PetMood =
   | 'sad'
   | 'excited'
   | 'study'
+  | 'studyAlt'
+  | 'spotted'
+  | 'waving'
+  | 'jumping'
   | 'work'
   | 'play'
   | 'affection'
@@ -59,6 +66,10 @@ export const PET_ASSET_PATHS: Record<PetMood, string> = {
   sad: sadAsset,
   excited: excitedAsset,
   study: studyAsset,
+  studyAlt: studyAltAsset,
+  spotted: spottedAsset,
+  waving: wavingAsset,
+  jumping: jumpingAsset,
   work: workAsset,
   play: playAsset,
   affection: affectionAsset,

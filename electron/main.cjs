@@ -1,14 +1,47 @@
-const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, screen } = require('electron')
+const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, screen, shell } = require('electron')
+const { spawn } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
 
 const isDev = !process.env.PET_LOAD_DIST && !app.isPackaged
-const windowSize = 220
+const windowSize = 300
+const codexStatusMoods = Object.freeze({
+  idle: 'idle',
+  thinking: 'studyAlt',
+  reading: 'study',
+  planning: 'work',
+  running: 'spotted',
+  review: 'work',
+  success: 'happy',
+  blocked: 'waving',
+  error: 'sick',
+})
+const codexStatusLabels = Object.freeze({
+  idle: '就绪',
+  thinking: '思考中',
+  reading: '阅读中',
+  planning: '规划中',
+  running: '执行中',
+  review: '检查中',
+  success: '已完成',
+  blocked: '等待确认',
+  error: '需要处理',
+})
 
 let petWindow = null
 let tray = null
 let config = null
+let codexState = null
+let codexStatePath = null
+let codexActivityTimer = null
+let lastCodexActivitySignature = ''
+let cachedCodexSessionFile = null
+let lastCodexSessionScanAt = 0
 let isQuitting = false
+
+function isCodexMode() {
+  return process.env.CODEX_PET_MODE === '1' || Boolean(process.env.CODEX_PET_STATE)
+}
 
 function getConfigPath() {
   return path.join(app.getPath('userData'), 'ram-pet-config.json')
@@ -47,9 +80,325 @@ function writeConfig() {
   fs.writeFileSync(getConfigPath(), `${JSON.stringify(config, null, 2)}\n`, 'utf8')
 }
 
+function getCodexStatePath() {
+  if (process.env.CODEX_PET_STATE) return path.resolve(process.env.CODEX_PET_STATE)
+  return path.join(app.getPath('userData'), 'codex-pet-state.json')
+}
+
+function defaultCodexState(status = 'idle', message = 'Codex 已就绪') {
+  return {
+    status,
+    message,
+    detail: '',
+    updatedAt: new Date().toISOString(),
+    source: 'ram-pet',
+  }
+}
+
+function normalizeCodexState(raw) {
+  const status = Object.hasOwn(codexStatusMoods, raw?.status) ? raw.status : 'idle'
+  const fallback = defaultCodexState(status, codexStatusLabels[status])
+  const detail = Array.isArray(raw?.preview)
+    ? raw.preview.filter((item) => typeof item === 'string' && item.trim()).join('\n')
+    : raw?.detail
+  return {
+    ...fallback,
+    ...raw,
+    status,
+    message: typeof raw?.message === 'string' && raw.message.trim() ? raw.message.trim().slice(0, 120) : fallback.message,
+    detail: typeof detail === 'string' ? detail.replaceAll('\\n', '\n').trim().slice(0, 360) : '',
+    updatedAt: typeof raw?.updatedAt === 'string' ? raw.updatedAt : fallback.updatedAt,
+  }
+}
+
+function readCodexState() {
+  try {
+    return normalizeCodexState(JSON.parse(fs.readFileSync(codexStatePath, 'utf8')))
+  } catch {
+    return defaultCodexState()
+  }
+}
+
+function writeCodexState(nextState) {
+  codexState = normalizeCodexState(nextState)
+  fs.mkdirSync(path.dirname(codexStatePath), { recursive: true })
+  fs.writeFileSync(codexStatePath, `${JSON.stringify(codexState, null, 2)}\n`, 'utf8')
+  publishCodexState()
+  refreshTrayMenu()
+}
+
+function listFilesRecursive(root, predicate, maxDepth = 6) {
+  const results = []
+  function visit(dir, depth) {
+    if (depth > maxDepth) return
+    let entries = []
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const filePath = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        visit(filePath, depth + 1)
+      } else if (predicate(entry.name, filePath)) {
+        results.push(filePath)
+      }
+    }
+  }
+  visit(root, 0)
+  return results
+}
+
+function findLatestCodexSessionFile() {
+  const now = Date.now()
+  if (cachedCodexSessionFile && now - lastCodexSessionScanAt < 5000) return cachedCodexSessionFile
+  lastCodexSessionScanAt = now
+  const root = path.join(app.getPath('home'), '.codex', 'sessions')
+  let latest = null
+  for (const filePath of listFilesRecursive(root, (name) => /^rollout-.*\.jsonl$/.test(name))) {
+    try {
+      const stats = fs.statSync(filePath)
+      if (!latest || stats.mtimeMs > latest.mtimeMs) latest = { filePath, mtimeMs: stats.mtimeMs }
+    } catch {
+      // Ignore sessions that rotate while we are scanning.
+    }
+  }
+  cachedCodexSessionFile = latest?.filePath || null
+  return cachedCodexSessionFile
+}
+
+function readTailLines(filePath, maxBytes = 128 * 1024) {
+  try {
+    const stats = fs.statSync(filePath)
+    const size = Math.min(stats.size, maxBytes)
+    const buffer = Buffer.alloc(size)
+    const fd = fs.openSync(filePath, 'r')
+    try {
+      fs.readSync(fd, buffer, 0, size, stats.size - size)
+    } finally {
+      fs.closeSync(fd)
+    }
+    return buffer.toString('utf8').split(/\r?\n/).filter(Boolean).slice(-120)
+  } catch {
+    return []
+  }
+}
+
+function textFromAssistantMessage(payload) {
+  if (!Array.isArray(payload?.content)) return ''
+  return payload.content
+    .map((part) => (typeof part?.text === 'string' ? part.text : ''))
+    .filter(Boolean)
+    .join('\n')
+    .trim()
+}
+
+function summarizeCommand(payload) {
+  let args = {}
+  try {
+    args = JSON.parse(payload?.arguments || '{}')
+  } catch {
+    args = {}
+  }
+  const command = typeof args.command === 'string' ? args.command : ''
+  const toolName = payload?.name ? `tool: ${payload.name}` : ''
+  return [toolName, command].filter(Boolean).join('\n').slice(0, 360)
+}
+
+function summarizeToolOutput(payload) {
+  const output = typeof payload?.output === 'string' ? payload.output : ''
+  return output.split(/\r?\n/).filter(Boolean).slice(0, 6).join('\n').slice(0, 360)
+}
+
+function inferredStateFromEntry(entry) {
+  const payload = entry?.payload || {}
+  const timestamp = typeof entry?.timestamp === 'string' ? entry.timestamp : new Date().toISOString()
+  const base = {
+    updatedAt: timestamp,
+    source: 'codex-session-watch',
+  }
+
+  if (entry?.type === 'turn_context') {
+    return {
+      ...base,
+      status: 'thinking',
+      message: '我收到新任务，正在进入状态。',
+      detail: '',
+    }
+  }
+
+  if (entry?.type === 'event_msg') {
+    if (payload.type === 'context_compacted') {
+      return {
+        ...base,
+        status: 'reading',
+        message: '我在恢复上下文。',
+        detail: 'Codex 正在压缩并恢复当前会话上下文。',
+      }
+    }
+    if (payload.type === 'agent_message' && typeof payload.message === 'string') {
+      return {
+        ...base,
+        status: 'thinking',
+        message: '我正在同步进展。',
+        detail: payload.message.slice(0, 360),
+      }
+    }
+    return null
+  }
+
+  if (entry?.type !== 'response_item') return null
+
+  if (payload.type === 'function_call') {
+    if (payload.name === 'update_plan') {
+      return {
+        ...base,
+        status: 'planning',
+        message: '我在整理计划。',
+        detail: summarizeCommand(payload),
+      }
+    }
+    if (payload.name === 'request_user_input') {
+      return {
+        ...base,
+        status: 'blocked',
+        message: '需要你确认一下。',
+        detail: summarizeCommand(payload),
+      }
+    }
+    return {
+      ...base,
+      status: 'running',
+      message: '我正在执行命令。',
+      detail: summarizeCommand(payload),
+    }
+  }
+
+  if (payload.type === 'function_call_output') {
+    return {
+      ...base,
+      status: 'review',
+      message: '我在复查执行结果。',
+      detail: summarizeToolOutput(payload),
+    }
+  }
+
+  if (payload.type === 'reasoning') {
+    return {
+      ...base,
+      status: 'thinking',
+      message: '我在思考下一步。',
+      detail: '',
+    }
+  }
+
+  if (payload.type === 'message' && payload.role === 'assistant') {
+    return {
+      ...base,
+      status: 'success',
+      message: '我整理好了回复。',
+      detail: textFromAssistantMessage(payload).slice(0, 360),
+    }
+  }
+
+  return null
+}
+
+function inferLatestCodexActivity() {
+  const sessionFile = findLatestCodexSessionFile()
+  if (!sessionFile) return null
+  const lines = readTailLines(sessionFile)
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      const entry = JSON.parse(lines[index])
+      const next = inferredStateFromEntry(entry)
+      if (!next) continue
+      const payload = entry.payload || {}
+      return {
+        ...next,
+        detail: [next.detail, `session: ${path.basename(sessionFile)}`].filter(Boolean).join('\n'),
+        signature: [entry.timestamp, entry.type, payload.type, payload.call_id, payload.name].filter(Boolean).join('|'),
+      }
+    } catch {
+      // Ignore incomplete JSONL lines while Codex is writing them.
+    }
+  }
+  return null
+}
+
+function syncCodexActivity() {
+  if (!codexStatePath) return
+  const next = inferLatestCodexActivity()
+  if (!next || next.signature === lastCodexActivitySignature) return
+  const nextTime = Date.parse(next.updatedAt)
+  const currentTime = Date.parse(codexState?.updatedAt || '')
+  if (Number.isFinite(nextTime) && Number.isFinite(currentTime) && nextTime <= currentTime) return
+  lastCodexActivitySignature = next.signature
+  const { signature, ...state } = next
+  writeCodexState(state)
+}
+
+function startCodexActivitySync() {
+  if (process.env.CODEX_PET_AUTO_SYNC === '0') return
+  syncCodexActivity()
+  codexActivityTimer = setInterval(syncCodexActivity, 1200)
+  if (typeof codexActivityTimer.unref === 'function') codexActivityTimer.unref()
+}
+
+function stopCodexActivitySync() {
+  if (!codexActivityTimer) return
+  clearInterval(codexActivityTimer)
+  codexActivityTimer = null
+}
+
+function ensureCodexStateFile() {
+  fs.mkdirSync(path.dirname(codexStatePath), { recursive: true })
+  if (!fs.existsSync(codexStatePath)) writeCodexState(defaultCodexState())
+}
+
+function publishCodexState() {
+  if (!codexState) codexState = readCodexState()
+  sendPetAction({
+    type: 'codex-status',
+    ...codexState,
+    mood: codexStatusMoods[codexState.status] || 'idle',
+  })
+}
+
+function startCodexBridge() {
+  codexStatePath = getCodexStatePath()
+  ensureCodexStateFile()
+  codexState = readCodexState()
+  fs.watchFile(codexStatePath, { interval: 750 }, (current, previous) => {
+    if (current.mtimeMs === previous.mtimeMs) return
+    codexState = readCodexState()
+    publishCodexState()
+    refreshTrayMenu()
+  })
+}
+
+function stopCodexBridge() {
+  if (!codexStatePath) return
+  fs.unwatchFile(codexStatePath)
+}
+
 function clampWindowPosition(x, y, width = windowSize, height = windowSize) {
-  const display = screen.getDisplayNearestPoint({ x, y })
-  const bounds = display.workArea
+  const displays = screen.getAllDisplays()
+  const bounds = displays.reduce((acc, display) => {
+    const area = display.workArea
+    if (!acc) return { ...area }
+    const left = Math.min(acc.x, area.x)
+    const top = Math.min(acc.y, area.y)
+    const right = Math.max(acc.x + acc.width, area.x + area.width)
+    const bottom = Math.max(acc.y + acc.height, area.y + area.height)
+    return {
+      x: left,
+      y: top,
+      width: right - left,
+      height: bottom - top,
+    }
+  }, null) || screen.getPrimaryDisplay().workArea
   return {
     x: Math.max(bounds.x, Math.min(bounds.x + bounds.width - width, Math.round(x))),
     y: Math.max(bounds.y, Math.min(bounds.y + bounds.height - height, Math.round(y))),
@@ -103,8 +452,66 @@ function sendVisiblePetAction(action) {
   sendPetAction(action)
 }
 
+function findWindowsCodexExe() {
+  const override = process.env.CODEX_APP_EXE
+  if (override && fs.existsSync(override)) return override
+
+  const roots = [
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'WindowsApps'),
+    path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'WindowsApps'),
+  ]
+  const packagePattern = /^OpenAI\.Codex_.*__2p2nqsd0c76g0$/
+  const candidates = []
+  for (const root of roots) {
+    let entries = []
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !packagePattern.test(entry.name)) continue
+      const exe = path.join(root, entry.name, 'app', 'Codex.exe')
+      try {
+        candidates.push({ exe, mtimeMs: fs.statSync(exe).mtimeMs })
+      } catch {
+        // Skip partial or inaccessible package entries.
+      }
+    }
+  }
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs)
+  return candidates[0]?.exe || null
+}
+
+function openCodexApp() {
+  if (process.platform === 'win32') {
+    const codexExe = findWindowsCodexExe()
+    if (codexExe) {
+      const child = spawn(codexExe, [], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      child.unref()
+      return
+    }
+
+    shell.openExternal('codex://').catch(() => {
+      const child = spawn('explorer.exe', ['shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App'], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      child.unref()
+    })
+    return
+  }
+  shell.openExternal('codex://').catch(() => {})
+}
+
 function buildMenuTemplate() {
-  return [
+  const template = [
+    ...(isCodexMode() ? [{ label: '打开 Codex', click: openCodexApp }, { type: 'separator' }] : []),
     {
       label: petWindow?.isVisible() ? '隐藏拉姆' : '显示拉姆',
       click: () => (petWindow?.isVisible() ? hidePetWindow() : showPetWindow()),
@@ -118,18 +525,6 @@ function buildMenuTemplate() {
     },
     { type: 'separator' },
     {
-      label: '互动',
-      submenu: [
-        { label: '摸摸', click: () => sendVisiblePetAction({ type: 'mood', mood: 'affection' }) },
-        { label: '玩耍', click: () => sendVisiblePetAction({ type: 'mood', mood: 'play' }) },
-        { label: '学习', click: () => sendVisiblePetAction({ type: 'mood', mood: 'study' }) },
-        { label: '工作', click: () => sendVisiblePetAction({ type: 'mood', mood: 'work' }) },
-        { label: '睡觉', click: () => sendVisiblePetAction({ type: 'mood', mood: 'sleep' }) },
-        { label: '走路（测试）', click: () => sendVisiblePetAction({ type: 'mood', mood: 'walk' }) },
-      ],
-    },
-    { type: 'separator' },
-    {
       label: '退出',
       click: () => {
         isQuitting = true
@@ -138,6 +533,7 @@ function buildMenuTemplate() {
       },
     },
   ]
+  return template
 }
 
 function refreshTrayMenu() {
@@ -210,13 +606,20 @@ function createPetWindow() {
     : `file://${path.join(__dirname, '../dist/index.html')}?desktop=1`
 
   petWindow.loadURL(url)
-  petWindow.once('ready-to-show', showPetWindow)
+  petWindow.once('ready-to-show', () => {
+    showPetWindow()
+    if (isCodexMode()) publishCodexState()
+  })
 }
 
 app.whenReady().then(() => {
   config = readConfig()
   createPetWindow()
   createTray()
+  if (isCodexMode()) {
+    startCodexBridge()
+    startCodexActivitySync()
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createPetWindow()
@@ -226,6 +629,8 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   isQuitting = true
+  stopCodexActivitySync()
+  stopCodexBridge()
   persistWindowPosition()
 })
 
