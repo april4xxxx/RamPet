@@ -12,6 +12,8 @@
     "desktop": "concurrently -k \"npm run dev -- --host 127.0.0.1\" \"npm run electron\"",
     "build": "vue-tsc -b && vite build",
     "desktop:prod": "npm run build && cross-env PET_LOAD_DIST=1 electron electron/main.cjs",
+    "codex:pet": "node scripts/codex-pet.mjs start",
+    "codex:status": "node scripts/codex-pet.mjs status",
     "preview": "vite preview",
     "dist:mac": "npm run build && electron-builder --mac dmg --publish never",
     "dist:win": "npm run build && electron-builder --win portable --x64 --publish never",
