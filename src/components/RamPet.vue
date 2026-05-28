@@ -201,8 +201,13 @@ function beginDrag(event: PointerEvent) {
   // DIP / event-coordinate mismatches that caused the window to drift on
   // Windows HiDPI. The offset is the cursor's pixel position inside the
   // Electron window (frameless ⇒ clientX/Y already equals window-local).
+  //
+  // Use the *pointerdown* clientXY, not the threshold-cross event coords:
+  // the threshold introduces a 4+px lag in the drag direction, and using
+  // that lagged value made every TL→BR round trip drift the pet ~2Δ TL.
+  const grab = pointerDown.value ?? { x: event.clientX, y: event.clientY }
   if (props.desktop && window.ramPetWindow) {
-    void window.ramPetWindow.startDrag({ x: event.clientX, y: event.clientY })
+    void window.ramPetWindow.startDrag({ x: grab.x, y: grab.y })
   }
 }
 
