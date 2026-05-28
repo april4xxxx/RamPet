@@ -30,6 +30,8 @@ const props = defineProps<{
 }>()
 
 const mood = ref<PetMood>('idle')
+const petRef = ref<HTMLElement | null>(null)
+const isCursorOverPet = ref(false)
 const position = ref(props.desktop ? { x: 68, y: 92 } : { x: 80, y: 260 })
 const dragOffset = ref({ x: 0, y: 0 })
 const lastPointer = ref({ x: 0, y: 0 })
@@ -194,6 +196,14 @@ function beginDrag(event: PointerEvent) {
     x: event.clientX - position.value.x,
     y: event.clientY - position.value.y,
   }
+  // In desktop mode hand drag tracking to the main process — it polls the
+  // OS cursor position via `screen.getCursorScreenPoint()`, which avoids the
+  // DIP / event-coordinate mismatches that caused the window to drift on
+  // Windows HiDPI. The offset is the cursor's pixel position inside the
+  // Electron window (frameless ⇒ clientX/Y already equals window-local).
+  if (props.desktop && window.ramPetWindow) {
+    void window.ramPetWindow.startDrag({ x: event.clientX, y: event.clientY })
+  }
 }
 
 function startDrag(event: PointerEvent) {
@@ -216,16 +226,14 @@ function drag(event: PointerEvent) {
   }
   if (!isDragging.value) return
   if (props.desktop && window.ramPetWindow) {
-    const delta = {
-      x: event.screenX - lastPointer.value.x,
-      y: event.screenY - lastPointer.value.y,
-    }
+    const dx = event.screenX - lastPointer.value.x
     lastPointer.value = { x: event.screenX, y: event.screenY }
-    if (Math.abs(delta.x) > 1) {
+    if (Math.abs(dx) > 1) {
       // 水平拖动方向与面朝方向相反：往右拖则脸朝左（scaleX -1）
-      direction.value = delta.x > 0 ? -1 : 1
+      direction.value = dx > 0 ? -1 : 1
     }
-    void window.ramPetWindow.moveBy(delta)
+    // Main process polls the cursor and updates window bounds itself; we
+    // only need to keep `direction` in sync here.
     return
   }
   if (Math.abs(event.movementX) > 1) {
@@ -252,12 +260,39 @@ function stopDrag(event: PointerEvent) {
   mood.value = 'idle'
   clearWalkTimers()
   stopWalkFrameTimer()
+  if (props.desktop && window.ramPetWindow) {
+    void window.ramPetWindow.endDrag()
+  }
 }
 
 function showContextMenu(event: MouseEvent) {
   if (!props.desktop || !window.ramPetWindow) return
   event.preventDefault()
   void window.ramPetWindow.showContextMenu()
+}
+
+// The Electron window is 300x300 but the pet sprite is only ~164x164. To
+// stop the transparent margin from blocking the desktop, the main process
+// keeps the window in `setIgnoreMouseEvents(true, { forward: true })` mode.
+// We listen to forwarded `mousemove` to flip the window back to clickable
+// only while the cursor is over the pet itself (and while dragging).
+function trackCursorForClickThrough(event: MouseEvent) {
+  if (!petRef.value) return
+  const rect = petRef.value.getBoundingClientRect()
+  const inside =
+    event.clientX >= rect.left &&
+    event.clientX < rect.right &&
+    event.clientY >= rect.top &&
+    event.clientY < rect.bottom
+  if (inside !== isCursorOverPet.value) {
+    isCursorOverPet.value = inside
+  }
+}
+
+function applyClickableState() {
+  if (!props.desktop || !window.ramPetWindow) return
+  const clickable = isCursorOverPet.value || isDragging.value
+  void window.ramPetWindow.setClickable(clickable)
 }
 
 function clearWalkTimers() {
@@ -421,6 +456,8 @@ watch(mood, (nextMood) => {
   }
 })
 
+watch([isCursorOverPet, isDragging], applyClickableState)
+
 onMounted(() => {
   sleepTimer = window.setInterval(checkSleep, 1000)
   walkTimer = window.setInterval(moveRandomly, WALK_EVERY_MS)
@@ -429,6 +466,11 @@ onMounted(() => {
   speechTimer = window.setInterval(showSpeechBubble, 60000)
 
   unsubscribePetAction = window.ramPetWindow?.onAction(handlePetAction)
+
+  if (props.desktop) {
+    document.addEventListener('mousemove', trackCursorForClickThrough)
+    applyClickableState()
+  }
 })
 
 onUnmounted(() => {
@@ -444,11 +486,15 @@ onUnmounted(() => {
     studySwapTimer = 0
   }
   unsubscribePetAction?.()
+  if (props.desktop) {
+    document.removeEventListener('mousemove', trackCursorForClickThrough)
+  }
 })
 </script>
 
 <template>
   <div
+    ref="petRef"
     class="ram-pet"
     :class="[
       `is-${mood}`,
