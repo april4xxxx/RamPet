@@ -5,6 +5,16 @@ const path = require('node:path')
 
 const isDev = !process.env.PET_LOAD_DIST && !app.isPackaged
 const windowSize = 300
+// The Electron window is 300x300, but `.ram-pet` (the actual clickable /
+// visible pet bbox in the renderer) is `PET_BODY` sized, offset by
+// `PET_INSET` inside the window. The remaining margins are transparent
+// padding for the speech / Codex bubble. Clamping the *window* to workArea
+// would leave the visible pet a corresponding 68 / 92 / 44 px short of
+// each screen edge, so we clamp the visible pet bbox instead — the
+// transparent margins are allowed to overhang workArea.
+// Must stay in sync with the values used by `RamPet.vue` and `style.css`.
+const PET_BODY = Object.freeze({ width: 164, height: 164 })
+const PET_INSET = Object.freeze({ left: 68, top: 92 })
 const codexStatusMoods = Object.freeze({
   idle: 'idle',
   thinking: 'studyAlt',
@@ -38,6 +48,10 @@ let lastCodexActivitySignature = ''
 let cachedCodexSessionFile = null
 let lastCodexSessionScanAt = 0
 let isQuitting = false
+let dragOffset = null
+let dragTrackTimer = null
+let isClickable = false
+let persistTimer = null
 
 function isCodexMode() {
   return process.env.CODEX_PET_MODE === '1' || Boolean(process.env.CODEX_PET_STATE)
@@ -383,33 +397,133 @@ function stopCodexBridge() {
   fs.unwatchFile(codexStatePath)
 }
 
-function clampWindowPosition(x, y, width = windowSize, height = windowSize) {
+function rectContains(area, x, y) {
+  return x >= area.x && y >= area.y && x < area.x + area.width && y < area.y + area.height
+}
+
+function distanceToRect(area, x, y) {
+  const dx = Math.max(area.x - x, 0, x - (area.x + area.width - 1))
+  const dy = Math.max(area.y - y, 0, y - (area.y + area.height - 1))
+  return dx * dx + dy * dy
+}
+
+// Per-display clamp: keep the *visible pet bbox* within the workArea of the
+// display that contains the pet's center. If no display contains the center
+// (e.g. the window drifted into a "void" region between monitors after a
+// display layout change), fall back to the nearest display.
+//
+// Note: the returned window position can be slightly outside the workArea —
+// only the pet's visible portion is constrained, the transparent margins of
+// the Electron window are allowed to overhang.
+function clampWindowPosition(x, y) {
   const displays = screen.getAllDisplays()
-  const bounds = displays.reduce((acc, display) => {
-    const area = display.workArea
-    if (!acc) return { ...area }
-    const left = Math.min(acc.x, area.x)
-    const top = Math.min(acc.y, area.y)
-    const right = Math.max(acc.x + acc.width, area.x + area.width)
-    const bottom = Math.max(acc.y + acc.height, area.y + area.height)
-    return {
-      x: left,
-      y: top,
-      width: right - left,
-      height: bottom - top,
+  if (!displays.length) return clampToArea(screen.getPrimaryDisplay().workArea, x, y)
+  const petCenterX = x + PET_INSET.left + PET_BODY.width / 2
+  const petCenterY = y + PET_INSET.top + PET_BODY.height / 2
+  let target = displays.find((d) => rectContains(d.workArea, petCenterX, petCenterY))
+  if (!target) {
+    let bestDistance = Infinity
+    for (const d of displays) {
+      const dist = distanceToRect(d.workArea, petCenterX, petCenterY)
+      if (dist < bestDistance) {
+        bestDistance = dist
+        target = d
+      }
     }
-  }, null) || screen.getPrimaryDisplay().workArea
-  return {
-    x: Math.max(bounds.x, Math.min(bounds.x + bounds.width - width, Math.round(x))),
-    y: Math.max(bounds.y, Math.min(bounds.y + bounds.height - height, Math.round(y))),
   }
+  return clampToArea(target.workArea, x, y)
+}
+
+function clampToArea(area, x, y) {
+  const minX = area.x - PET_INSET.left
+  const maxX = area.x + area.width - PET_INSET.left - PET_BODY.width
+  const minY = area.y - PET_INSET.top
+  const maxY = area.y + area.height - PET_INSET.top - PET_BODY.height
+  return {
+    x: Math.max(minX, Math.min(maxX, Math.round(x))),
+    y: Math.max(minY, Math.min(maxY, Math.round(y))),
+  }
+}
+
+function applyWindowPosition(x, y) {
+  if (!petWindow) return null
+  const bounds = petWindow.getBounds()
+  const next = clampWindowPosition(x, y)
+  petWindow.setBounds({ x: next.x, y: next.y, width: bounds.width, height: bounds.height })
+  return { applied: next, previous: bounds }
 }
 
 function persistWindowPosition() {
   if (!petWindow || !config) return
   const bounds = petWindow.getBounds()
-  config.position = clampWindowPosition(bounds.x, bounds.y, bounds.width, bounds.height)
+  config.position = clampWindowPosition(bounds.x, bounds.y)
   writeConfig()
+}
+
+// Debounce config writes — drag and walk can move the window dozens of times
+// per second; syncing to disk on every tick stalls the event loop.
+function schedulePersistWindowPosition() {
+  if (persistTimer) return
+  persistTimer = setTimeout(() => {
+    persistTimer = null
+    persistWindowPosition()
+  }, 250)
+  if (typeof persistTimer.unref === 'function') persistTimer.unref()
+}
+
+function flushPersistWindowPosition() {
+  if (persistTimer) {
+    clearTimeout(persistTimer)
+    persistTimer = null
+  }
+  persistWindowPosition()
+}
+
+function reclampIntoVisibleArea() {
+  if (!petWindow) return
+  const bounds = petWindow.getBounds()
+  const next = clampWindowPosition(bounds.x, bounds.y)
+  if (next.x !== bounds.x || next.y !== bounds.y) {
+    petWindow.setBounds({ x: next.x, y: next.y, width: bounds.width, height: bounds.height })
+  }
+  schedulePersistWindowPosition()
+}
+
+function setPetClickable(clickable) {
+  if (!petWindow) return
+  const desired = Boolean(clickable)
+  if (desired === isClickable) return
+  isClickable = desired
+  petWindow.setIgnoreMouseEvents(!desired, { forward: true })
+}
+
+function startCursorDrag(offset) {
+  dragOffset = {
+    x: Number.isFinite(offset?.x) ? offset.x : 0,
+    y: Number.isFinite(offset?.y) ? offset.y : 0,
+  }
+  stopCursorDrag(false)
+  // Track at ~60fps. Use setInterval rather than chasing pointer events from
+  // the renderer to bypass any DIP / event-coordinate mismatches.
+  dragTrackTimer = setInterval(syncWindowToCursor, 16)
+  if (typeof dragTrackTimer.unref === 'function') dragTrackTimer.unref()
+  syncWindowToCursor()
+}
+
+function stopCursorDrag(clearOffset = true) {
+  if (dragTrackTimer) {
+    clearInterval(dragTrackTimer)
+    dragTrackTimer = null
+  }
+  if (clearOffset) dragOffset = null
+  flushPersistWindowPosition()
+}
+
+function syncWindowToCursor() {
+  if (!petWindow || !dragOffset) return
+  const cursor = screen.getCursorScreenPoint()
+  applyWindowPosition(cursor.x - dragOffset.x, cursor.y - dragOffset.y)
+  schedulePersistWindowPosition()
 }
 
 function sendPetAction(action) {
@@ -591,8 +705,13 @@ function createPetWindow() {
 
   petWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   petWindow.setAlwaysOnTop(config.alwaysOnTop, 'floating')
+  // Default the window to click-through; the renderer toggles back to
+  // clickable only when the cursor is over the pet sprite itself, so the
+  // transparent margins of the 300x300 window stop blocking the desktop.
+  isClickable = false
+  petWindow.setIgnoreMouseEvents(true, { forward: true })
 
-  petWindow.on('moved', persistWindowPosition)
+  petWindow.on('moved', schedulePersistWindowPosition)
   petWindow.on('close', (event) => {
     if (isQuitting) return
     event.preventDefault()
@@ -621,6 +740,10 @@ app.whenReady().then(() => {
     startCodexActivitySync()
   }
 
+  for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) {
+    screen.on(event, reclampIntoVisibleArea)
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createPetWindow()
     showPetWindow()
@@ -629,9 +752,10 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   isQuitting = true
+  stopCursorDrag()
   stopCodexActivitySync()
   stopCodexBridge()
-  persistWindowPosition()
+  flushPersistWindowPosition()
 })
 
 app.on('window-all-closed', () => {
@@ -640,12 +764,31 @@ app.on('window-all-closed', () => {
 
 ipcMain.handle('pet-window:move-by', (_event, delta) => {
   if (!petWindow) return { x: 0, y: 0 }
-  const bounds = petWindow.getBounds()
-  const next = clampWindowPosition(bounds.x + delta.x, bounds.y + delta.y, bounds.width, bounds.height)
-  petWindow.setPosition(next.x, next.y, false)
+  const current = petWindow.getBounds()
+  const result = applyWindowPosition(
+    current.x + (Number(delta?.x) || 0),
+    current.y + (Number(delta?.y) || 0),
+  )
+  if (!result) return { x: 0, y: 0 }
   config.visible = true
-  persistWindowPosition()
-  return { x: next.x - bounds.x, y: next.y - bounds.y }
+  schedulePersistWindowPosition()
+  return {
+    x: result.applied.x - result.previous.x,
+    y: result.applied.y - result.previous.y,
+  }
+})
+
+ipcMain.handle('pet-window:start-drag', (_event, offset) => {
+  setPetClickable(true)
+  startCursorDrag(offset)
+})
+
+ipcMain.handle('pet-window:end-drag', () => {
+  stopCursorDrag()
+})
+
+ipcMain.handle('pet-window:set-clickable', (_event, clickable) => {
+  setPetClickable(clickable)
 })
 
 ipcMain.handle('pet-window:show-context-menu', () => {
