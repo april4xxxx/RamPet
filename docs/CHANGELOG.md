@@ -11,6 +11,18 @@ Format: [Semantic Versioning](https://semver.org) · Dates in YYYY-MM-DD
 
 ### Changed
 
+### Fixed
+
+---
+
+## [0.0.6] — 2026-05-29
+
+### Added
+
+### Changed
+
+- 修复桌宠窗口位置漂移、拖拽偏移和透明边缘误拦截点击的问题
+
 - GitHub Release 正文改为读取当前版本的 changelog 内容，避免只显示自动生成的 `Full Changelog` 链接。
 
 ### Fixed

@@ -1,7 +1,7 @@
 {
   "name": "pet",
   "private": true,
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "A Ram desktop pet app built with Vue and Electron.",
   "author": "Siyue",
   "main": "electron/main.cjs",
@@ -30,7 +30,7 @@
     "@vue/tsconfig": "^0.9.1",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
-    "electron": "^42.0.0",
+    "electron": "^42.3.0",
     "electron-builder": "^26.8.1",
     "sharp": "^0.34.5",
     "typescript": "~6.0.2",
