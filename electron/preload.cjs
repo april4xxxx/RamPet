@@ -21,4 +21,13 @@ contextBridge.exposeInMainWorld('ramPetWindow', {
     ipcRenderer.on('pet-action', listener)
     return () => ipcRenderer.removeListener('pet-action', listener)
   },
+  loadCareStats() {
+    return ipcRenderer.invoke('pet-window:load-care-stats')
+  },
+  saveCareStats(payload) {
+    return ipcRenderer.invoke('pet-window:save-care-stats', payload)
+  },
+  reportCareStats(stats) {
+    return ipcRenderer.invoke('pet-window:report-care-stats', stats)
+  },
 })

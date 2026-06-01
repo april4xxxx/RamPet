@@ -1,7 +1,7 @@
 {
   "name": "pet",
   "private": true,
-  "version": "0.0.6",
+  "version": "0.1.0",
   "description": "A Ram desktop pet app built with Vue and Electron.",
   "author": "Siyue",
   "main": "electron/main.cjs",
@@ -17,7 +17,7 @@
     "preview": "vite preview",
     "dist:mac": "npm run build && electron-builder --mac dmg --publish never",
     "dist:win": "npm run build && electron-builder --win portable --x64 --publish never",
-    "release:patch": "node scripts/release.mjs patch",
+"release:patch": "node scripts/release.mjs patch",
     "release:minor": "node scripts/release.mjs minor",
     "release:major": "node scripts/release.mjs major"
   },
