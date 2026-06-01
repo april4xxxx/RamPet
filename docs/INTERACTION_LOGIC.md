@@ -1,24 +1,77 @@
 # 拉姆交互逻辑（当前实现）
 
-本文档只描述当前 App 已实现的交互与自动行为，不包含新情绪扩展方案。
+本文档描述当前 App 已实现的交互、自动行为和节奏。当代码常量变化时**必须同步更新此文件**。
 
 代码基准：
 
-- `src/components/RamPet.vue`
-- `src/lib/pet-state.ts`
+- [src/components/RamPet.vue](../src/components/RamPet.vue)
+- [src/lib/pet-state.ts](../src/lib/pet-state.ts)
+- [src/lib/care-stats.ts](../src/lib/care-stats.ts)
 
-## 运行时常量
+## 节奏总览：闲置 5 分钟时间线
+
+下面是 **应用启动后无任何用户交互** 的真实时间线（v0.1.0 调慢后的新节奏）：
+
+```
+时间(s) │ 0    30   60   90   120  150  180  210  240  270  300
+────────┼──────────────────────────────────────────────────────────
+启动    │ ●━waving━●(2.2s)
+打招呼  │ (1.5s 后一次性)
+        │
+环境随机│        ●ambient   ●ambient   ●ambient   ●ambient   ●ambient
+30s周期 │        43% idle   43% idle   43% idle   43% idle   43% idle
+        │        其余切到 study/work/play/excited（各占 14%）
+        │
+走路    │                ●━walk━●        ●━walk━●        ●━walk━●
+25s周期 │                (1.92s)         (1.92s)         (1.92s)
+        │
+说话气泡│                                                    （首次在 12s）
+        │ ●(12s)
+        │            （下次在 +5min = 312s）
+        │
+睡眠    │                                                            ●sleep
+5min    │                                                            (自动入睡)
+        │
+数值衰减│        ●tick   ●tick   ●tick   ●tick   ●tick   ●tick   ●tick
+30s tick│        (无视觉变化，只在数值低于阈值时下次 ambient 才会浮现)
+```
+
+**期望体感**：每分钟 **0-2 次** 表情/动作变化。绝大部分时间在 idle 呼吸。
+
+## 运行时常量（v0.1.0 当前值）
 
 | 常量 | 值 | 说明 |
 | --- | ---: | --- |
+| **基础** | | |
 | `TRANSIENT_FOR_MS` | `1800ms` | 默认短时情绪持续时间。 |
-| `WALK_EVERY_MS` | `9000ms` | 自动走路尝试周期。 |
+| 拖拽阈值 | `4px` | 超过后进入拖拽态。 |
+| **走路** | | |
+| `WALK_EVERY_MS` | `25000ms` | 自动走路尝试周期（**v0.1.0：9s → 25s**）。 |
 | `WALK_DURATION_MS` | `1920ms` | 单次走路持续时间（按 `walk-1/walk-2` 完整循环收尾）。 |
 | `WALK_STEP_INTERVAL_MS` | `60ms` | 桌面模式下单步位移频率。 |
 | `WALK_STEP_PX` | `6px` | 桌面模式下单步位移距离。 |
-| `SLEEP_AFTER_MS` | `300000ms` | 无交互进入睡觉阈值。 |
-| `AMBIENT` 轮询周期 | `10000ms` | 环境随机情绪尝试周期。 |
-| 拖拽阈值 | `4px` | 超过后进入拖拽态。 |
+| **环境随机** | | |
+| `AMBIENT_EVERY_MS` | `30000ms` | 环境随机尝试周期（**v0.1.0：10s → 30s**）。 |
+| `AMBIENT_MOODS` | 加权 7 项 | `['idle','idle','idle','study','work','play','excited']` —— idle 占 3/7（**v0.1.0：1/5 → 3/7**） |
+| `AMBIENT_MOOD_DURATIONS.study` | `8000ms` | |
+| `AMBIENT_MOOD_DURATIONS.work` | `9000ms` | |
+| `AMBIENT_MOOD_DURATIONS.play` | `3000ms` | |
+| `AMBIENT_MOOD_DURATIONS.excited` | `2200ms` | |
+| **睡觉** | | |
+| `SLEEP_AFTER_MS` | `300000ms`（5 分钟） | 无交互进入睡觉阈值。 |
+| **说话气泡** | | |
+| `SPEECH_BUBBLE_INITIAL_MS` | `12000ms` | 启动后首次气泡延迟（**v0.1.0：3s → 12s**，避开 waving 打招呼期间）。 |
+| `SPEECH_BUBBLE_INTERVAL_MS` | `300000ms`（5 分钟） | 气泡周期（**v0.1.0：60s → 5min**）。 |
+| **启动 / 接近反应** | | |
+| `WAVING_DURATION_MS` | `2200ms` | 启动 1.5s 后一次性打招呼时长。 |
+| `SPOTTED_RADIUS_PX` | `240px` | 鼠标接近触发半径。 |
+| `SPOTTED_SPEED_PX_PER_MS` | `0.6` | 鼠标速度阈值。 |
+| `SPOTTED_COOLDOWN_MS` | `30000ms` | 触发后冷却（**v0.1.0：10s → 30s**）。 |
+| `SPOTTED_DURATION_MS` | `1400ms` | 单次 spotted 持续。 |
+| **养成数值** | | |
+| `CARE_CHECK_INTERVAL_MS` | `30000ms` | 数值衰减 tick + 危险态评估。 |
+| `CARE_DANGER_DURATION_MS` | `6000ms` | 危险态浮现时长。 |
+| 衰减详见 | | [iterations.md 数值层](iterations.md#数值层) |
 
 ## 拉姆本体动作说明（固定索引区）
 
@@ -36,8 +89,10 @@
 
 | 用户操作 | 条件/判定 | 触发 mood | 持续 | 备注 |
 | --- | --- | --- | --- | --- |
-| 单击宠物 | 触发 `click` | 从 `affection/happy/play/excited` 洗牌池依次取值 | `1800ms` | 和纯随机不同：一轮内不重复，且尽量避免与上一次相同。 |
+| 单击宠物 | 触发 `click` | 从 `affection/happy/play/excited/jumping` 洗牌池依次取值 | `1800ms` | 和纯随机不同：一轮内不重复，且尽量避免与上一次相同。 |
 | 悬停宠物 | 触发 `pointerenter` | 不切换 mood（仅唤醒） | - | 若当前为 `sleep`，立即回 `idle`；同时刷新交互时间。 |
+| 鼠标快速接近 | 桌面模式下鼠标在拉姆外圈 240px 内、速度 ≥ 0.6px/ms | `spotted` | `1400ms` | 10s 冷却；睡觉/走路/拖拽/限时态期间不触发；触发时朝向鼠标。 |
+| 应用启动 | `onMounted` 后 1.5s | `waving` | `2200ms` | 一次性；启动时若已被拖拽/睡觉/限时态阻塞则跳过。 |
 | 开始拖拽 | 按下后移动距离 `>= 4px` | `carried` | 直到拖拽结束 | 内部用长时限（1h）保持，松手时强制结束。 |
 | 结束拖拽 | `pointerup/pointercancel` 且正在拖拽 | `idle` | 非限时 | 立即清掉限时标记并回待机。 |
 | 任意交互唤醒 | 交互发生时当前为 `sleep` | `idle`（先唤醒） | 非限时 | 再进入具体交互目标 mood。 |
@@ -46,22 +101,43 @@
 
 | 自动行为 | 触发周期/条件 | 触发 mood | 持续 | 阻塞条件 |
 | --- | --- | --- | --- | --- |
-| 自动走路 | 每 `9000ms` 尝试；70% 维持上次方向、30% 反向 | `walk` | `1920ms`（桌面模式分步走，每 `60ms` 调用 `pet-window:move-by` 移动 `6px`，总位移约 190px） | 拖拽中 / 限时态中 / 当前 `sleep` 时跳过；撞到屏幕边缘提前结束并把 `direction` 反向后回 `idle`。 |
-| 环境随机 | 每 `10000ms` 尝试，从 `idle/study/work/play/excited` 抽样 | 抽到 `idle` 则直接 `idle`；否则 `study/work/play/excited` | `study`=`8000ms`，`work`=`9000ms`，`play`=`3000ms`，`excited`=`2200ms` | 拖拽中 / 限时态中 / 当前 `sleep` 时跳过。 |
-| 闲置睡觉 | 每 `1000ms` 检查；距离最后交互超过 `300000ms` | `sleep` | 非限时 | 拖拽中 / 限时态中时不进入睡觉。 |
+| 自动走路 | 每 `25000ms` 尝试；70% 维持上次方向、30% 反向 | `walk` | `1920ms`（桌面模式分步走，每 `60ms` 调用 `pet-window:move-by` 移动 `6px`，总位移约 190px） | 拖拽中 / 限时态中 / 当前 `sleep` 时跳过；撞到屏幕边缘提前结束并把 `direction` 反向后回 `idle`。 |
+| 环境随机 | 每 `30000ms` 尝试，从加权池 `[idle×3, study, work, play, excited]` 抽样 | 抽到 `idle` 则直接 `idle`（≈43% 概率）；否则切到对应忙碌态 | `study`=`8000ms`，`work`=`9000ms`，`play`=`3000ms`，`excited`=`2200ms` | 拖拽中 / 限时态中 / 当前 `sleep` 时跳过；数值危险态（hunger/cleanliness/mood/health < 30）会覆盖本次抽样。 |
+| 危险态浮现 | `chooseAmbientMood` tick 中若 `dangerSignal` 非空（每 `30000ms` 评估一次） | 按优先级 `sick > hungry > dirty > sad` 取最高优先级 | `6000ms` | 拖拽中 / 限时态中 / 当前 `sleep` 时跳过。 |
+| 闲置睡觉 | 每 `1000ms` 检查；距离最后交互超过 `300000ms` | `sleep` | 非限时（任意交互或菜单可唤醒） | 拖拽中 / 限时态中时不进入睡觉。 |
+| 说话气泡 | 启动 `12000ms` 后首次；之后每 `300000ms`（5min） | 不切换 mood（若不在正向态则会切到正向态再说话） | 气泡 `7000ms` | 拖拽中 / 当前 `sleep` 或 `walk` / Codex 持久状态期间。 |
+| 数值衰减 | 每 `30000ms` tick | 不直接切 mood，只衰减数值；阈值由"危险态浮现"消费 | — | 始终运行（数值变化在背景，不打扰）。 |
 
 ## 3) 菜单行为 -> mood 映射
 
-右键仅负责唤起菜单；实际 mood 由 `window.ramPetWindow.onAction` 回传后设置。
+右键拉姆 / 左键托盘 / 右键托盘均唤起同一菜单，实际 action 由 `window.ramPetWindow.onAction` 回传后在 renderer 端处理。当前 v0.1.0 菜单结构：
 
-| 菜单项 | action mood | 实际设置 | 持续 | 备注 |
+```
+显示/隐藏拉姆       ← 窗口控制
+重置位置
+保持置顶 [✓]
+─────────
+查看状态            ← 弹出拉姆头顶气泡数值面板（5s 自动消失）
+今日状态 ►          ← 子菜单展开四项数值
+─────────
+睡觉                ← 进入持久睡眠，任意交互可唤醒
+─────────
+（条件显示）
+喂食（饱腹 42）      ← hunger < 60 才出现
+洗澡（清洁 38）      ← cleanliness < 60 才出现
+吃药（健康 25）      ← health < 60 才出现
+─────────
+退出
+```
+
+| 菜单项 | action 类型 | 实际行为 | 持续 | 数值影响 |
 | --- | --- | --- | --- | --- |
-| 摸摸 | `affection` | `affection` | `1800ms` | 走 `performMoodAction`。 |
-| 玩耍 | `play` | `play` | `1800ms` | 走 `performMoodAction`。 |
-| 学习 | `study` | `study` | `1800ms` | 走 `performMoodAction`。 |
-| 工作 | `work` | `work` | `1800ms` | 走 `performMoodAction`。 |
-| 睡觉 | `sleep` | `sleep` | `1800ms` | 当前实现是限时睡觉，不是永久睡眠锁定。 |
-| 走路（测试） | `walk` | `walk` | `1920ms` | 走专用 `walk` 分支：会真正移动窗口，便于快速验证走路链路。 |
+| 查看状态 | `{type:'show-stats'}` | 拉姆头顶气泡浮出四项数值（带颜色分级和数字） | `5000ms` 自动隐藏 | — |
+| 今日状态 | 子菜单 | 直接展示四项当前数值（main 进程缓存） | 子菜单常驻 | — |
+| 睡觉 | `{type:'mood', mood:'sleep'}` | 直接 `mood='sleep'` + `transientUntil=0` + 清走路 timer | 持久（任意 hover/click/drag 唤醒） | — |
+| 喂食 | `{type:'care', action:'feed'}` | `eating` mood + hunger +40 | `1800ms` | hunger +40 |
+| 洗澡 | `{type:'care', action:'clean'}` | `cleaning` mood + cleanliness +40 | `1800ms` | cleanliness +40 |
+| 吃药 | `{type:'care', action:'medicate'}` | `medicine` mood + health +30 | `1800ms` | health +30 |
 
 ## 4) 状态优先级与覆盖规则
 
@@ -76,10 +152,13 @@
 | R7 | `sleep` 的来源有两种：闲置自动进入（非限时），或菜单触发（当前实现为 `1800ms` 限时）。 |
 | R8 | 桌面模式下走路是「分步走」：每 `60ms` 让主进程把窗口位移 `6px`；走路过程中切到非 `walk`、进入 `sleep`、开始拖拽、组件卸载都会立刻清掉走路 timer。 |
 | R9 | `walk` 正常到时后回到 `idle`；若撞到屏幕边缘（主进程返回的实际位移为 0），则本次 `walk` 立即结束并回 `idle`，同时把 `direction` 反过来留给下一轮。 |
+| R10 | 菜单"睡觉"是**持久睡眠**（`transientUntil=0`），与闲置 5min 自动入睡一致；任意 hover/click/drag 都会通过 `markInteraction` 把 `mood` 从 `sleep` 唤醒回 `idle`。 |
+| R11 | 数值危险态（`sick/hungry/dirty/sad`）只在 `chooseAmbientMood` tick 中评估并覆盖，不会打断走路、限时态、睡眠或正在拖拽。 |
+| R12 | 单击洗牌池 `CLICK_MOOD_POOL = ['affection','happy','play','excited','jumping']` 全部 ⊆ `POSITIVE_INTERACTION_MOODS`，所以点击始终触发 `mood +5` 隐性回补。**扩展洗牌池时必须保持这一不变量**，否则会出现"点击不回血"的隐性 bug。 |
 
 ## 当前不会自动出现的已接入情绪
 
-以下 mood 已在 `PetMood` 与素材中存在，但当前没有自动触发路径（仅可作为后续预留）：
+以下 mood 已在 `PetMood` 与素材中存在，但当前没有自动触发路径（仅可作为后续预留，等待数值/养成系统接入）：
 
 - `dirty`
 - `hungry`

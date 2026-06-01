@@ -13,6 +13,8 @@ dist-ssr
 release
 *.blockmap
 *.local
+.env
+.env.*
 
 # Local generated exports and recordings
 codex-related-export/

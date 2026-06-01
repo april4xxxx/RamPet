@@ -53,6 +53,16 @@ let dragTrackTimer = null
 let isClickable = false
 let persistTimer = null
 
+// 由 renderer 推送上来的当前数值，供菜单条件显示和托盘子菜单使用
+let currentCareStats = { hunger: 82, cleanliness: 88, mood: 86, health: 92 }
+const CARE_MENU_THRESHOLD = 60
+const CARE_STAT_LABELS = {
+  hunger: '饱腹',
+  cleanliness: '清洁',
+  mood: '心情',
+  health: '健康',
+}
+
 function isCodexMode() {
   return process.env.CODEX_PET_MODE === '1' || Boolean(process.env.CODEX_PET_STATE)
 }
@@ -623,7 +633,64 @@ function openCodexApp() {
   shell.openExternal('codex://').catch(() => {})
 }
 
+function getCareStatsPath() {
+  return path.join(app.getPath('userData'), 'ram-care-stats.json')
+}
+
+function readCareStats() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(getCareStatsPath(), 'utf8'))
+    if (!parsed || typeof parsed !== 'object') return null
+    const stats = parsed.stats || parsed
+    const out = {
+      hunger: Number.isFinite(stats?.hunger) ? stats.hunger : 82,
+      cleanliness: Number.isFinite(stats?.cleanliness) ? stats.cleanliness : 88,
+      mood: Number.isFinite(stats?.mood) ? stats.mood : 86,
+      health: Number.isFinite(stats?.health) ? stats.health : 92,
+    }
+    const savedAt = Number.isFinite(parsed?.savedAt) ? parsed.savedAt : Date.now()
+    return { stats: out, savedAt }
+  } catch {
+    return null
+  }
+}
+
+function writeCareStats(payload) {
+  try {
+    fs.mkdirSync(path.dirname(getCareStatsPath()), { recursive: true })
+    fs.writeFileSync(getCareStatsPath(), `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+  } catch {
+    // 持久化失败不影响游戏，下一次 tick 会再尝试
+  }
+}
+
+function buildStatsSubmenu() {
+  return Object.entries(CARE_STAT_LABELS).map(([key, label]) => ({
+    label: `${label}：${Math.round(currentCareStats[key] ?? 0)}`,
+    enabled: false,
+  }))
+}
+
+function buildCareActionMenu() {
+  const actions = [
+    { key: 'hunger', label: '喂食', kind: 'feed' },
+    { key: 'cleanliness', label: '洗澡', kind: 'clean' },
+    { key: 'health', label: '吃药', kind: 'medicate' },
+  ]
+  const items = []
+  for (const action of actions) {
+    const value = Math.round(currentCareStats[action.key] ?? 100)
+    if (value >= CARE_MENU_THRESHOLD) continue
+    items.push({
+      label: `${action.label}（${CARE_STAT_LABELS[action.key]} ${value}）`,
+      click: () => sendVisiblePetAction({ type: 'care', action: action.kind }),
+    })
+  }
+  return items
+}
+
 function buildMenuTemplate() {
+  const careActions = buildCareActionMenu()
   const template = [
     ...(isCodexMode() ? [{ label: '打开 Codex', click: openCodexApp }, { type: 'separator' }] : []),
     {
@@ -637,6 +704,21 @@ function buildMenuTemplate() {
       checked: Boolean(config.alwaysOnTop),
       click: (item) => updateAlwaysOnTop(item.checked),
     },
+    { type: 'separator' },
+    {
+      label: '查看状态',
+      click: () => sendVisiblePetAction({ type: 'show-stats' }),
+    },
+    {
+      label: '今日状态',
+      submenu: buildStatsSubmenu(),
+    },
+    { type: 'separator' },
+    {
+      label: '睡觉',
+      click: () => sendVisiblePetAction({ type: 'mood', mood: 'sleep' }),
+    },
+    ...(careActions.length ? [{ type: 'separator' }, ...careActions] : []),
     { type: 'separator' },
     {
       label: '退出',
@@ -793,4 +875,24 @@ ipcMain.handle('pet-window:set-clickable', (_event, clickable) => {
 
 ipcMain.handle('pet-window:show-context-menu', () => {
   showPetContextMenu()
+})
+
+ipcMain.handle('pet-window:load-care-stats', () => {
+  return readCareStats()
+})
+
+ipcMain.handle('pet-window:save-care-stats', (_event, payload) => {
+  if (!payload || typeof payload !== 'object' || !payload.stats) return
+  writeCareStats(payload)
+})
+
+ipcMain.handle('pet-window:report-care-stats', (_event, stats) => {
+  if (!stats || typeof stats !== 'object') return
+  currentCareStats = {
+    hunger: Number.isFinite(stats.hunger) ? stats.hunger : currentCareStats.hunger,
+    cleanliness: Number.isFinite(stats.cleanliness) ? stats.cleanliness : currentCareStats.cleanliness,
+    mood: Number.isFinite(stats.mood) ? stats.mood : currentCareStats.mood,
+    health: Number.isFinite(stats.health) ? stats.health : currentCareStats.health,
+  }
+  refreshTrayMenu()
 })

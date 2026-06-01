@@ -9,9 +9,53 @@ Format: [Semantic Versioning](https://semver.org) · Dates in YYYY-MM-DD
 
 ### Added
 
-### Changed
+- 右键菜单新增"睡觉"，进入**持久睡眠**（与闲置 5min 自动入睡一致，任意 hover/click/drag 可唤醒），位于"查看状态/今日状态"之后、"喂食/洗澡/吃药"之前。
+
+### Changed — 节奏调慢（解决"状态切换太频繁"反馈）
+
+- `WALK_EVERY_MS`：9s → **25s**（自动走路从"几乎一直在走"变成"偶尔散步"）
+- `AMBIENT_EVERY_MS`：10s → **30s**（环境随机周期减一半）
+- `AMBIENT_MOODS`：从 5 项等概率 → 加权 7 项 `['idle','idle','idle','study','work','play','excited']`，idle 占 3/7 ≈ 43%（**v0.1.0：1/5 → 3/7**），其余各 14%
+- 新增 `SPEECH_BUBBLE_INTERVAL_MS = 5min`、`SPEECH_BUBBLE_INITIAL_MS = 12s`（原硬编码 60s / 3s）
+- `SPOTTED_COOLDOWN_MS`：10s → **30s**（鼠标常来回经过时不频繁触发被吓到反应）
+- 预期每分钟自动行为变化次数：**6-8 次 → 1-2 次**
 
 ### Fixed
+
+---
+
+## [0.1.0] — 2026-06-01
+
+### Added — Phase A：自发动作扩展
+
+- 启动后 1.5s 触发 `waving` 打招呼（2200ms），首次进入桌面时拉姆主动挥手。
+- 单击洗牌池新增 `jumping`，原 4 个情绪扩展为 `affection/happy/play/excited/jumping` 5 个，一轮内仍不重复。
+- 桌面模式下鼠标快速接近拉姆外圈（240px、速度 ≥ 0.6px/ms）触发 `spotted` 反应（1400ms，10s 冷却），并朝向鼠标方向。
+
+### Added — Phase B：养成系统数值层
+
+- 新增 `src/lib/care-stats.ts` composable，承载 `hunger/cleanliness/mood/health` 四项数值的衰减、阈值检查和持久化。
+- 数值轻量档衰减：饱腹每 5min -1、清洁每 8min -1、心情每 15min -1；健康不自然衰减，但其他三项低于 30 持续累计 10min 后扣 1 点健康。
+- 数值低于 30 时独立检查器覆盖环境随机，按优先级 `health > hunger > cleanliness > mood` 触发 `sick/hungry/dirty/sad`，每 30s 评估一次，触发时持续 6000ms。
+- 持久化到 `userData/ram-care-stats.json`，关机重开自动按时间差补衰减，离线封顶 8 小时。
+- 单击/摸摸等正向互动隐性 +5 心情；新增"喂食/洗澡/吃药"菜单动作，对应 `eating/cleaning/medicine` 状态 + 数值回补（+40 / +40 / +30）。
+- 右键菜单新增"查看状态"，触发拉姆头顶气泡浮出 4 项数值条（带颜色分级：>60 绿 / 30-60 黄 / <30 红）+ 具体数字，5 秒自动隐藏，点击关闭。
+- 托盘菜单新增"今日状态"子菜单，展示四项当前数值。
+- "喂食/洗澡/吃药"菜单项仅在对应数值 < 60 时显示，标签带当前数值。
+- 新增 IPC：`pet-window:load-care-stats` / `save-care-stats` / `report-care-stats`。
+
+### Changed
+
+- `eating` 临时复用 `happy.png` 作为占位素材（旧实现用 `idle.png`），喂食动作期间表情更接近"在吃"的语义。等独立素材接入后替换。
+- 文档体系新增 `docs/iterations.md`、`docs/plan.md`，并把 `docs/ROADMAP.md` 标记为已被 `plan.md` 取代。
+- `PetAction` 类型扩展 `'care'` / `'show-stats'` 两种动作；旧的纯 `mood` 动作向后兼容。
+- 版本号从 0.0.x 升至 0.1.x：养成系统是产品意义上的第一个 milestone。
+
+### Fixed — 数值策划审核反馈
+
+- 修复离线 unhealthy 时长算法 bug：原实现把整段 `elapsed` 一刀切判为 unhealthy，导致出差 8h 回来 health 可能被惩罚扣 ~48 点。改为按每项 stat 实际跨过 30 的时间段累加，取三项并集时长。
+- 删除冗余的 `checkTimer`：`decayTimer` 已在 tick 内调用 `evaluateDanger`，独立 timer 完全重复，节省一个 interval。
+- 增加 `hydrate` 时的时钟 sanity check：负值（时钟回拨）或 > 30 天的离线间隔直接按 0 处理，避免异常时钟触发离线封顶满额衰减。
 
 ---
 

@@ -22,10 +22,19 @@ export type CodexStatusAction = {
   source?: string
 }
 
+export type CareActionKind = 'feed' | 'clean' | 'medicate'
+
 export type PetAction =
   | {
       type: 'mood'
       mood: string
+    }
+  | {
+      type: 'care'
+      action: CareActionKind
+    }
+  | {
+      type: 'show-stats'
     }
   | CodexStatusAction
 

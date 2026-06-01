@@ -4,9 +4,12 @@ import {
   AMBIENT_EVERY_MS,
   AMBIENT_MOOD_DURATIONS,
   AMBIENT_MOODS,
+  CARE_DANGER_DURATION_MS,
   FALLBACK_ASSET_PATH,
   PET_ASSET_PATHS,
   SLEEP_AFTER_MS,
+  SPEECH_BUBBLE_INITIAL_MS,
+  SPEECH_BUBBLE_INTERVAL_MS,
   STUDY_ALT_ASSET_PATH,
   WORK_ALT_ASSET_PATH,
   TRANSIENT_FOR_MS,
@@ -17,9 +20,11 @@ import {
   WALK_STEP_PX,
   type PetMood,
 } from '../lib/pet-state'
+import { useCareStats } from '../lib/care-stats'
 import {
   CODEX_STATUS_LABELS,
   isPersistentCodexStatus,
+  type CareActionKind,
   type CodexPetStatus,
   type CodexStatusAction,
   type PetAction,
@@ -51,6 +56,40 @@ const codexStatus = ref<CodexPetStatus>('idle')
 const codexMessage = ref('Codex 已就绪')
 const codexDetail = ref('')
 
+const statsPanelVisible = ref(false)
+let statsPanelHideTimer = 0
+const STATS_PANEL_AUTO_HIDE_MS = 5000
+
+const care = useCareStats({
+  load: () => (props.desktop && window.ramPetWindow ? window.ramPetWindow.loadCareStats() : Promise.resolve(null)),
+  save: (snapshot) => {
+    if (props.desktop && window.ramPetWindow) void window.ramPetWindow.saveCareStats(snapshot)
+  },
+  report: (stats) => {
+    if (props.desktop && window.ramPetWindow) void window.ramPetWindow.reportCareStats(stats)
+  },
+})
+
+const careStats = care.stats
+const dangerSignal = care.dangerSignal
+
+const STAT_DISPLAY: Array<{ key: keyof typeof careStats.value; label: string; emoji: string }> = [
+  { key: 'hunger', label: '饱腹', emoji: '🍖' },
+  { key: 'cleanliness', label: '清洁', emoji: '🫧' },
+  { key: 'mood', label: '心情', emoji: '💗' },
+  { key: 'health', label: '健康', emoji: '❤️' },
+]
+
+function statColorClass(value: number) {
+  if (value < 30) return 'is-danger'
+  if (value < 60) return 'is-warn'
+  return 'is-ok'
+}
+
+function statBarStyle(value: number) {
+  return { width: `${Math.max(0, Math.min(100, value))}%` }
+}
+
 let sleepTimer = 0
 let walkTimer = 0
 let moodTimer = 0
@@ -63,6 +102,14 @@ let speechHideTimer = 0
 let unsubscribePetAction: (() => void) | undefined
 
 const SPEECH_ALLOWED_MOODS = ['affection', 'happy', 'play', 'excited'] as const satisfies readonly PetMood[]
+const CLICK_MOOD_POOL: PetMood[] = ['affection', 'happy', 'play', 'excited', 'jumping']
+const SPOTTED_RADIUS_PX = 240
+const SPOTTED_SPEED_PX_PER_MS = 0.6
+const SPOTTED_COOLDOWN_MS = 30000  // 10s → 30s（鼠标常来回经过时不频繁触发）
+const SPOTTED_DURATION_MS = 1400
+const WAVING_DURATION_MS = 2200
+let lastCursorSample: { x: number; y: number; t: number } | null = null
+let lastSpottedAt = 0
 const CARE_MESSAGES = [
   '坐太久啦，起来走走吧。',
   '活动一下肩颈吧。',
@@ -132,9 +179,30 @@ function setMood(nextMood: PetMood, duration = TRANSIENT_FOR_MS) {
   }
 }
 
+const POSITIVE_INTERACTION_MOODS: PetMood[] = ['affection', 'happy', 'play', 'excited', 'jumping']
+
 function performMoodAction(nextMood: PetMood) {
   markInteraction()
   setMood(nextMood)
+  if (POSITIVE_INTERACTION_MOODS.includes(nextMood)) {
+    care.applyInteractionBonus()
+  }
+}
+
+function handleCareAction(action: CareActionKind) {
+  const recipe = care.restore(action)
+  if (!recipe) return
+  markInteraction()
+  setMood(recipe.mood, recipe.duration)
+}
+
+function showStatsPanel() {
+  statsPanelVisible.value = true
+  if (statsPanelHideTimer) window.clearTimeout(statsPanelHideTimer)
+  statsPanelHideTimer = window.setTimeout(() => {
+    statsPanelVisible.value = false
+    statsPanelHideTimer = 0
+  }, STATS_PANEL_AUTO_HIDE_MS)
 }
 
 function shuffleMoods(moods: PetMood[]) {
@@ -148,7 +216,7 @@ function shuffleMoods(moods: PetMood[]) {
 
 function nextClickMood() {
   if (clickMoodPool.value.length === 0) {
-    clickMoodPool.value = shuffleMoods(['affection', 'happy', 'play', 'excited'])
+    clickMoodPool.value = shuffleMoods(CLICK_MOOD_POOL)
     if (lastClickMood.value && clickMoodPool.value[0] === lastClickMood.value && clickMoodPool.value.length > 1) {
       ;[clickMoodPool.value[0], clickMoodPool.value[1]] = [clickMoodPool.value[1], clickMoodPool.value[0]]
     }
@@ -292,6 +360,32 @@ function trackCursorForClickThrough(event: MouseEvent) {
   if (inside !== isCursorOverPet.value) {
     isCursorOverPet.value = inside
   }
+  maybeTriggerSpotted(event, rect, inside)
+}
+
+function maybeTriggerSpotted(event: MouseEvent, rect: DOMRect, inside: boolean) {
+  const now = Date.now()
+  const prev = lastCursorSample
+  lastCursorSample = { x: event.clientX, y: event.clientY, t: now }
+  if (inside || isDragging.value) return
+  if (mood.value === 'sleep' || mood.value === 'walk' || mood.value === 'carried') return
+  if (isTransientActive() || isCodexDrivingMood()) return
+  if (now - lastSpottedAt < SPOTTED_COOLDOWN_MS) return
+  if (!prev) return
+  const dt = now - prev.t
+  if (dt <= 0 || dt > 120) return
+  const dx = event.clientX - prev.x
+  const dy = event.clientY - prev.y
+  const speed = Math.sqrt(dx * dx + dy * dy) / dt
+  if (speed < SPOTTED_SPEED_PX_PER_MS) return
+  const cx = (rect.left + rect.right) / 2
+  const cy = (rect.top + rect.bottom) / 2
+  const dist = Math.hypot(event.clientX - cx, event.clientY - cy)
+  if (dist > SPOTTED_RADIUS_PX) return
+  // 朝鼠标方向看
+  direction.value = event.clientX < cx ? 1 : -1
+  lastSpottedAt = now
+  setMood('spotted', SPOTTED_DURATION_MS)
 }
 
 function applyClickableState() {
@@ -393,6 +487,12 @@ function triggerWalkAction() {
 function chooseAmbientMood() {
   if (isCodexDrivingMood()) return
   if (isDragging.value || isTransientActive() || mood.value === 'sleep') return
+  // 数值危险态优先覆盖环境随机：饿/脏/病/难过会主动浮现，提醒用户照顾
+  const danger = dangerSignal.value
+  if (danger) {
+    setMood(danger.mood, CARE_DANGER_DURATION_MS)
+    return
+  }
   const nextMood = AMBIENT_MOODS[Math.floor(Math.random() * AMBIENT_MOODS.length)]
   if (nextMood === 'idle') mood.value = 'idle'
   else setMood(nextMood, AMBIENT_MOOD_DURATIONS[nextMood] ?? 2200)
@@ -443,9 +543,31 @@ function handlePetAction(action: PetAction) {
     handleCodexStatus(action)
     return
   }
+  if (action.type === 'care') {
+    handleCareAction(action.action)
+    return
+  }
+  if (action.type === 'show-stats') {
+    showStatsPanel()
+    return
+  }
   if (action.type !== 'mood') return
   if (action.mood === 'walk') {
     triggerWalkAction()
+    return
+  }
+  if (action.mood === 'sleep') {
+    // 菜单"睡觉"：进入持久睡眠（不限时），任意交互/悬停可唤醒，
+    // 与闲置 5min 自动入睡的行为一致。
+    clearWalkTimers()
+    stopWalkFrameTimer()
+    transientUntil.value = 0
+    mood.value = 'sleep'
+    speechText.value = ''
+    if (speechHideTimer) {
+      window.clearTimeout(speechHideTimer)
+      speechHideTimer = 0
+    }
     return
   }
   if (!(action.mood in PET_ASSET_PATHS)) return
@@ -467,8 +589,18 @@ onMounted(() => {
   sleepTimer = window.setInterval(checkSleep, 1000)
   walkTimer = window.setInterval(moveRandomly, WALK_EVERY_MS)
   moodTimer = window.setInterval(chooseAmbientMood, AMBIENT_EVERY_MS)
-  speechHideTimer = window.setTimeout(showSpeechBubble, 3000)
-  speechTimer = window.setInterval(showSpeechBubble, 60000)
+  speechHideTimer = window.setTimeout(showSpeechBubble, SPEECH_BUBBLE_INITIAL_MS)
+  speechTimer = window.setInterval(showSpeechBubble, SPEECH_BUBBLE_INTERVAL_MS)
+
+  // 启动打招呼
+  window.setTimeout(() => {
+    if (isDragging.value || mood.value === 'sleep' || isTransientActive()) return
+    setMood('waving', WAVING_DURATION_MS)
+  }, 1500)
+
+  void care.hydrate().then(() => {
+    care.start()
+  })
 
   unsubscribePetAction = window.ramPetWindow?.onAction(handlePetAction)
 
@@ -484,12 +616,14 @@ onUnmounted(() => {
   window.clearInterval(moodTimer)
   window.clearInterval(speechTimer)
   window.clearTimeout(speechHideTimer)
+  if (statsPanelHideTimer) window.clearTimeout(statsPanelHideTimer)
   stopWalkFrameTimer()
   clearWalkTimers()
   if (studySwapTimer) {
     window.clearTimeout(studySwapTimer)
     studySwapTimer = 0
   }
+  care.stop()
   unsubscribePetAction?.()
   if (props.desktop) {
     document.removeEventListener('mousemove', trackCursorForClickThrough)
@@ -535,6 +669,26 @@ onUnmounted(() => {
     </div>
     <div v-else-if="speechText" class="speech-bubble" role="status" aria-live="polite">
       {{ speechText }}
+    </div>
+    <div
+      v-if="statsPanelVisible"
+      class="stats-panel"
+      role="status"
+      aria-live="polite"
+      @click.stop="statsPanelVisible = false"
+    >
+      <div
+        v-for="entry in STAT_DISPLAY"
+        :key="entry.key"
+        class="stats-panel-row"
+      >
+        <span class="stats-panel-emoji">{{ entry.emoji }}</span>
+        <span class="stats-panel-label">{{ entry.label }}</span>
+        <span class="stats-panel-bar" :class="statColorClass(careStats[entry.key])">
+          <span class="stats-panel-bar-fill" :style="statBarStyle(careStats[entry.key])"></span>
+        </span>
+        <span class="stats-panel-value">{{ careStats[entry.key] }}</span>
+      </div>
     </div>
     <img v-if="hasAsset" class="ram-image" :src="assetPath" alt="" draggable="false" @error="onAssetError" />
     <div v-if="!hasAsset" class="asset-placeholder">
