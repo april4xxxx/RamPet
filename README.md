@@ -26,6 +26,15 @@ npm.cmd run codex:pet
 
 Codex mode watches `.codex-pet/status.json` and changes the pet mood from Codex status updates. See `docs/CODEX_PET.md` for the status commands.
 
+## GitHub Copilot CLI pet mode
+
+```powershell
+npm.cmd run gc:pet
+```
+
+GC CLI mode tails `~/.copilot/session-state/<id>/events.jsonl` and writes the same `.codex-pet/status.json`,
+so RamPet's mood UI is reused as-is. See `docs/GC_PET.md` for the event mapping and other subcommands.
+
 ## 打包
 
 Mac：
