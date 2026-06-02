@@ -14,6 +14,8 @@ npm.cmd run gc:pet
    自动同步，由 watcher 独占驱动。
 2. `gc-pet.mjs watch` 子进程 —— 后台 tail `~/.copilot/session-state/<id>/events.jsonl`。
 
+现在普通双击启动的桌宠也可以直接从右键菜单切到“监控 GitHub Copilot”，不必一定通过命令行脚本启动。
+
 会自动找当前活跃 session（按 `inuse.<pid>.lock` 判断进程是否还活着，再按 events.jsonl 最新修改时间排序）。
 
 ## 其他子命令
